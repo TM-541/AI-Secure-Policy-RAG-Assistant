@@ -28,5 +28,15 @@ jobs:
       - name: Guardrail red-team tests
         run: pytest -q
 
+      # Ignored advisories affect only ChromaDB's HTTP server (/api/v2 endpoints,
+      # multi-tenant RBAC). This app uses the embedded PersistentClient with no
+      # server or network port, so they are not exploitable here. No fix exists
+      # upstream yet; re-check and remove each ignore once a patched release ships.
+      # Details: SECURITY.md -> "Assessed advisories".
       - name: Dependency vulnerability audit
-        run: pip-audit -r requirements.txt
+        run: >
+          pip-audit -r requirements.txt
+          --ignore-vuln PYSEC-2026-311
+          --ignore-vuln PYSEC-2026-3813
+          --ignore-vuln PYSEC-2026-3814
+          --ignore-vuln PYSEC-2026-3815
