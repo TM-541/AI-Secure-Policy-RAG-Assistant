@@ -1,0 +1,9 @@
+# Normalise line endings in the repo; check out natively per OS.
+* text=auto eol=lf
+*.ps1 text eol=crlf
+
+# Never diff/merge binary artefacts as text.
+*.pdf binary
+*.docx binary
+*.sqlite3 binary
+*.bin binary

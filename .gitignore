@@ -1,0 +1,34 @@
+# Secrets
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# Local data (SQLite store, vector DB, audit log)
+data/
+*.sqlite3
+*.db
+*.log
+
+# Legacy data locations from older versions
+chroma_db/
+policy_store.sqlite3
+
+# Confidential company policy documents (keep only the folder README)
+policy_docs/to_import/*
+!policy_docs/to_import/README.txt
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# Editors / OS / local tooling
+.claude/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

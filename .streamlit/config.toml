@@ -1,0 +1,28 @@
+# Hardened Streamlit settings for the Secure Policy Assistant.
+
+[server]
+# Only reachable from this machine. To serve employees on the LAN, run:
+#   streamlit run app.py --server.address 0.0.0.0
+# and put it behind HTTPS + network access controls.
+address = "127.0.0.1"
+port = 8501
+headless = true
+enableXsrfProtection = true
+enableCORS = true
+maxUploadSize = 20
+
+[browser]
+# Disable Streamlit's anonymous usage telemetry (keeps data egress at zero).
+gatherUsageStats = false
+
+[client]
+# Hide stack traces and developer menus from end users.
+showErrorDetails = false
+toolbarMode = "minimal"
+
+[theme]
+base = "dark"
+backgroundColor = "#0B1120"
+secondaryBackgroundColor = "#111827"
+textColor = "#E5E7EB"
+primaryColor = "#22D3EE"
