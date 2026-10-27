@@ -1,11 +1,11 @@
 # Web UI
-streamlit>=1.41,<2.0
+streamlit>=1.66.1,<2.0
 
 # Local LLM + embeddings
-ollama>=0.4.7,<1.0
+ollama>=0.6.3,<1.0
 
 # Vector store
-chromadb>=1.0,<2.0
+chromadb>=1.5.9,<2.0
 
 # Chunking
 langchain-text-splitters>=0.3.0,<2.0
@@ -15,4 +15,4 @@ pypdf>=5.1.0,<7.0
 python-docx>=1.1.2,<2.0
 
 # Configuration (.env)
-python-dotenv>=1.0,<2.0
+python-dotenv>=1.2.4,<2.0
