@@ -1,7 +1,12 @@
 from collections import OrderedDict
 from io import BytesIO
+from pathlib import Path
 import hashlib
+import os
 import secrets
+import shutil
+import subprocess
+import sys
 import time
 import re
 
@@ -15,6 +20,7 @@ from docx import Document as DocxDocument
 from config import (
     CHROMA_DIR,
     OLLAMA_BASE_URL,
+    OLLAMA_IS_LOCAL,
     OLLAMA_MODEL,
     OLLAMA_TIMEOUT,
     EMBEDDING_MODEL,
@@ -84,6 +90,33 @@ MD_IMAGE_REGEX = re.compile(r"!\[[^\]]*\]\([^)]*\)")
 MD_LINK_REGEX = re.compile(r"\[([^\]]+)\]\((?:[^)]*)\)")
 RAW_URL_REGEX = re.compile(r"(?:https?|ftp|data):\S+", re.IGNORECASE)
 
+OLLAMA_START_TIMEOUT = 30
+
+
+def _find_ollama_executable():
+    """Locate the Ollama binary on PATH or in the default Windows install folders."""
+    found = shutil.which("ollama")
+    if found:
+        return found
+    if sys.platform == "win32":
+        candidates = (
+            (os.getenv("LOCALAPPDATA"), "Programs", "Ollama", "ollama.exe"),
+            (os.getenv("ProgramFiles"), "Ollama", "ollama.exe"),
+        )
+        for base, *parts in candidates:
+            if base and Path(base, *parts).is_file():
+                return str(Path(base, *parts))
+    return None
+
+
+def _model_available(name, local_models):
+    """True if the model is pulled, treating "name" and "name:latest" as equal."""
+    if name in local_models:
+        return True
+    if ":" not in name:
+        return f"{name}:latest" in local_models
+    return name.endswith(":latest") and name[:-len(":latest")] in local_models
+
 
 def extract_records(filename, extension, content):
     """Extract searchable text from supported policy documents."""
@@ -131,6 +164,9 @@ class PolicyRAG:
         init_db()
 
         self.ollama_client = ollama.Client(host=OLLAMA_BASE_URL, timeout=OLLAMA_TIMEOUT)
+        self._ensure_ollama_server()
+        self._ensure_models_available()
+
         self.chroma_client = chromadb.PersistentClient(
             path=str(CHROMA_DIR),
             settings=Settings(anonymized_telemetry=False),
@@ -163,6 +199,63 @@ class PolicyRAG:
         for allowed in (REFUSAL_ANSWER, NOT_FOUND_ANSWER):
             rules_only = rules_only.replace(allowed, " ")
         self._leak_detector.protect(rules_only)
+
+    def _ensure_ollama_server(self):
+        """Start a local Ollama server in the background if none is answering."""
+        try:
+            self.ollama_client.list()
+            return
+        except Exception:
+            pass
+
+        if not OLLAMA_IS_LOCAL:
+            raise ConnectionError(
+                f"Ollama at {OLLAMA_BASE_URL} is not reachable. "
+                "A remote Ollama host must be started on that server."
+            )
+
+        exe = _find_ollama_executable()
+        if not exe:
+            raise ConnectionError(
+                "Ollama is not installed. Install it from https://ollama.com/download "
+                "and restart the app."
+            )
+
+        print("Ollama is not running; starting it in the background...")
+        creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        subprocess.Popen(
+            [exe, "serve"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            creationflags=creationflags,
+        )
+
+        deadline = time.monotonic() + OLLAMA_START_TIMEOUT
+        while time.monotonic() < deadline:
+            try:
+                self.ollama_client.list()
+                return
+            except Exception:
+                time.sleep(1)
+        raise ConnectionError(
+            f"Started Ollama but it did not respond within {OLLAMA_START_TIMEOUT} seconds."
+        )
+
+    def _ensure_models_available(self):
+        """Pull the chat and embedding models if they are missing locally."""
+        response = self.ollama_client.list()
+        local_models = {m.model for m in response.models}
+
+        for model in dict.fromkeys((OLLAMA_MODEL, EMBEDDING_MODEL)):
+            if _model_available(model, local_models):
+                continue
+            print(f"Pulling missing Ollama model {model} (first run only)...")
+            last_status = None
+            for progress in self.ollama_client.pull(model, stream=True):
+                if progress.status != last_status:
+                    last_status = progress.status
+                    print(f"  {model}: {last_status}")
 
     def _embed(self, texts):
         if not texts:

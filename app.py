@@ -1,14 +1,17 @@
 import hmac
 import html
 import time
+from io import BytesIO
+from pathlib import Path
+from zipfile import is_zipfile
 
 import streamlit as st
 from config import (
     OLLAMA_MODEL, TOP_K, ADMIN_PASSWORD, ADMIN_MAX_ATTEMPTS, OLLAMA_IS_LOCAL,
-    MAX_BLOCKED_PER_SESSION, BLOCK_COOLDOWN_SECONDS,
+    MAX_BLOCKED_PER_SESSION, BLOCK_COOLDOWN_SECONDS, MAX_UPLOAD_BYTES,
 )
-from rag_engine import PolicyRAG, BLOCKED_ANSWERS
-from storage import init_db, list_documents, read_audit_tail, write_audit_log
+from rag_engine import PolicyRAG, BLOCKED_ANSWERS, extract_records
+from storage import init_db, import_document, list_documents, read_audit_tail, write_audit_log
 
 st.set_page_config(
     page_title="Secure Policy Assistant",
@@ -334,10 +337,10 @@ st.markdown("""
 
 @st.cache_resource
 def get_rag():
+    # Indexing happens after the document list is loaded, so an empty
+    # SQLite store does not take the whole app offline.
     init_db()
-    rag = PolicyRAG()
-    rag.rebuild_index()
-    return rag
+    return PolicyRAG()
 
 try:
     rag = get_rag()
@@ -372,13 +375,74 @@ def check_admin_password():
             f"attempt={st.session_state.admin_failures}",
         )
 
+SUPPORTED_UPLOAD_TYPES = {".pdf", ".docx", ".txt", ".md"}
+
+
+def validate_upload(filename, content):
+    """Mirror ingest_policies.validate_file for in-memory uploads. Returns (ok, reason)."""
+    extension = Path(filename).suffix.lower()
+    if extension not in SUPPORTED_UPLOAD_TYPES:
+        return False, "Unsupported file type"
+    if not content:
+        return False, "File is empty"
+    if len(content) > MAX_UPLOAD_BYTES:
+        return False, f"File exceeds the {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit"
+    if extension == ".pdf" and not content.startswith(b"%PDF-"):
+        return False, "Invalid PDF signature"
+    if extension == ".docx" and not is_zipfile(BytesIO(content)):
+        return False, "Invalid DOCX archive"
+    if extension in {".txt", ".md"}:
+        try:
+            content.decode("utf-8")
+        except UnicodeDecodeError:
+            return False, "Text file must use UTF-8 encoding"
+    # Only store files we can actually read (rejects encrypted/scanned PDFs).
+    try:
+        if not extract_records(filename, extension, content):
+            return False, "No extractable text (scanned PDF? needs OCR)"
+    except Exception:
+        return False, "File could not be parsed"
+    return True, None
+
+
+def handle_document_uploads(uploaded_files):
+    """Validate and store uploads. Returns (imported_count, messages)."""
+    imported, messages = 0, []
+    for uploaded in uploaded_files:
+        filename = Path(uploaded.name).name
+        content = uploaded.getvalue()
+        ok, reason = validate_upload(filename, content)
+        if not ok:
+            write_audit_log("upload_rejected", filename, reason)
+            messages.append(f"Skipped {filename}: {reason}")
+            continue
+        if import_document(filename, content, extension=Path(filename).suffix.lower()):
+            write_audit_log("upload_imported", filename)
+            messages.append(f"Imported {filename}")
+            imported += 1
+        else:
+            write_audit_log("upload_duplicate", filename)
+            messages.append(f"Skipped {filename}: duplicate content")
+    return imported, messages
+
+
 documents = []
 documents_error = None
+index_error = None
 if not startup_error:
     try:
         documents = list_documents()
     except Exception as exc:
         documents_error = str(exc)
+
+    if documents:
+        try:
+            rag.rebuild_index()
+        except Exception as exc:
+            print(f"Indexing failed: {exc!r}")
+            index_error = str(exc) if isinstance(exc, ValueError) else (
+                f"{type(exc).__name__}: indexing failed. See the server console for details."
+            )
 
 online = startup_error is None
 model_name = html.escape(str(OLLAMA_MODEL))
@@ -440,6 +504,9 @@ with st.sidebar:
         """, unsafe_allow_html=True)
 
         st.markdown("<div class='side-label'>Knowledge base</div>", unsafe_allow_html=True)
+        if index_error:
+            st.error("Policy index could not be built.")
+            st.caption(index_error)
         if documents_error:
             st.error("Could not load document list.")
         else:
@@ -452,6 +519,26 @@ with st.sidebar:
                     st.markdown(items, unsafe_allow_html=True)
                 else:
                     st.info("No documents imported.")
+
+        uploaded_files = st.file_uploader(
+            "Add policy documents",
+            type=["pdf", "docx", "txt", "md"],
+            accept_multiple_files=True,
+        )
+        if uploaded_files and st.button("Import & index uploaded files"):
+            with st.spinner("Importing and indexing documents..."):
+                imported, upload_messages = handle_document_uploads(uploaded_files)
+                if imported:
+                    try:
+                        upload_messages.append(rag.rebuild_index(force=True))
+                    except Exception as exc:
+                        print(f"Indexing failed: {exc!r}")
+                        upload_messages.append(f"Indexing failed: {type(exc).__name__}")
+            st.session_state.upload_messages = upload_messages
+            st.rerun()
+        # st.text, not markdown: filenames are user-controlled.
+        for msg in st.session_state.pop("upload_messages", []):
+            st.text(msg)
 
     st.divider()
 
@@ -558,9 +645,11 @@ if cooldown_left > 0:
         "This activity has been logged."
     )
 
+has_index = rag is not None and rag.collection.count() > 0
 question = st.chat_input(
-    "Ask a question about policies or contracts...",
-    disabled=rag is None or cooldown_left > 0,
+    "Ask a question about policies or contracts..." if has_index
+    else "Waiting for policy documents to be imported...",
+    disabled=not has_index or cooldown_left > 0,
 )
 
 if question:
