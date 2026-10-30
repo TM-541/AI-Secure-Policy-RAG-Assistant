@@ -160,3 +160,7 @@ GitHub Actions runs the same checks on every push and pull request (`.github/wor
 | "No policy documents are stored in SQLite" | Run `python ingest_policies.py` |
 | A file is skipped during import | Check the printed reason: encrypted, scanned, too large or wrong signature |
 | Audit panel says "locked" | Set `ADMIN_PASSWORD` in `.env` and restart Streamlit |
+
+## License
+
+[MIT](LICENSE). Copyright (c) 2026 Muhammad Talha.

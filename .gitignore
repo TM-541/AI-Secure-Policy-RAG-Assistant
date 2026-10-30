@@ -28,6 +28,7 @@ env/
 
 # Editors / OS / local tooling
 .claude/
+CLAUDE.md
 .vscode/
 .idea/
 .DS_Store
